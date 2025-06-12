@@ -152,7 +152,7 @@ def enviar_email(destinatario, assunto, corpo):
 
 def processar_planilha(path, empresa, email, log):
     try:
-        df = pd.read_excel(path, skiprows=9)
+        df = pd.read_excel(path, skiprows=8)
         df = df[pd.notna(df.iloc[:, 2]) & pd.notna(df.iloc[:, 7]) & pd.to_datetime(df.iloc[:, 10], errors='coerce').notna()]
 
         for _, row in df.iterrows():
