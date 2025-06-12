@@ -3,10 +3,10 @@ import os
 import re
 import json
 import smtplib
-import base64
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
 from fuzzywuzzy import fuzz
 from unidecode import unidecode
 import logging
@@ -73,13 +73,22 @@ def configurar_logging():
     logging.basicConfig(level=logging.INFO, handlers=[stream_handler, file_handler], force=True)
 
 def carregar_imagem_base64(caminho):
+    """Carrega uma imagem e retorna um objeto MIMEImage."""
     try:
-        if not os.path.exists(caminho): return None
+        if not os.path.exists(caminho):
+            return None
         with open(caminho, 'rb') as f:
-            img = base64.b64encode(f.read()).decode('utf-8')
-        ext = os.path.splitext(caminho)[1].lower()
-        mime = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif'}.get(ext[1:], 'image/png')
-        return f"data:{mime};base64,{img}"
+            dados = f.read()
+
+        ext = os.path.splitext(caminho)[1].lower()[1:]
+        subtype = {
+            'png': 'png',
+            'jpg': 'jpeg',
+            'jpeg': 'jpeg',
+            'gif': 'gif'
+        }.get(ext, 'png')
+
+        return MIMEImage(dados, _subtype=subtype)
     except Exception as e:
         logging.warning(f"Erro ao carregar imagem: {e}")
         return None
@@ -121,8 +130,7 @@ def calcular_dias_restantes(data):
 
 def gerar_conteudo_email(func, cargo, data_exame, empresa, tipo):
     dias = data_exame.strftime('%d/%m/%Y')
-    logo = carregar_imagem_base64(CAMINHO_LOGO)
-    img_tag = f'<img src="{logo}" alt="Logo" width="250px">' if logo else ''
+    img_tag = '<img src="cid:logo" width="250px">'
 
     estilo = """<style>
         body, p, ul, li { color: #000; font-family: Arial; font-size: 14px; }
@@ -159,6 +167,12 @@ def enviar_email(destinatario, assunto, corpo):
         msg['Bcc'] = ', '.join(bcc_list)
         msg['Subject'] = assunto
         msg.attach(MIMEText(corpo, 'html', 'utf-8'))
+
+        logo_img = carregar_imagem_base64(CAMINHO_LOGO)
+        if logo_img:
+            logo_img.add_header('Content-ID', '<logo>')
+            logo_img.add_header('Content-Disposition', 'inline', filename=os.path.basename(CAMINHO_LOGO))
+            msg.attach(logo_img)
 
         with smtplib.SMTP(SMTP_CONFIG['server'], SMTP_CONFIG['port']) as server:
             server.starttls()
