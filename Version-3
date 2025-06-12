@@ -3,10 +3,10 @@ import os
 import re
 import json
 import smtplib
-import base64
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
 from fuzzywuzzy import fuzz
 from unidecode import unidecode
 import logging
@@ -15,16 +15,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# === CONFIGURAÇÕES ===
-MODO_TESTE = True
-DIRETORIO_BASE = r"G:\\DEPARTAMENTO PESSOAL\\EMPRESAS"
-PLANILHA_EMAILS = r"G:\\PMA\\LISTA EMPRESAS - NETO CONTABILIDADE 2025 - Copia.xlsm"
-DIRETORIO_LOG = r"G:\\PMA\\SCRIPTS\\Departamento_Pessoal\\Exames_Periódicos"
-ARQUIVO_LOG = os.path.join(DIRETORIO_LOG, "emails_enviados.json")
-CAMINHO_LOGO = r"G:\\Identidade Visual\\- Atual -\\marca d´agua logo.png"
-
 def carregar_credenciais_smtp():
-    """Carrega usuario e senha do SMTP de variáveis de ambiente ou arquivo local."""
     usuario = os.getenv('SMTP_USER')
     senha = os.getenv('SMTP_PASSWORD')
     if not usuario or not senha:
@@ -34,27 +25,40 @@ def carregar_credenciais_smtp():
             senha = senha or getattr(local_settings, 'SMTP_PASSWORD', None)
         except Exception:
             pass
+
+    if not usuario or not senha:
+        logging.error("❌ Credenciais SMTP não encontradas! Defina no .env ou local_settings.py.")
+        return None
+
     return usuario, senha
 
-SMTP_USER, SMTP_PASSWORD = carregar_credenciais_smtp()
-if not SMTP_USER or not SMTP_PASSWORD:
-    logging.error("❌ Credenciais SMTP não definidas. Verifique o .env ou local_settings.py.")
+credenciais = carregar_credenciais_smtp()
+if not credenciais:
     exit(1)
 
+SMTP_USER, SMTP_PASSWORD = credenciais
+
+# === CONFIGURAÇÕES ===
+MODO_TESTE = True
+DIRETORIO_BASE = r"G:\\DEPARTAMENTO PESSOAL\\EMPRESAS"
+PLANILHA_EMAILS = r"G:\\PMA\\LISTA EMPRESAS - NETO CONTABILIDADE 2025 - Copia.xlsm"
+DIRETORIO_LOG = r"G:\\PMA\\SCRIPTS\\Departamento_Pessoal\\Exames_Periódicos"
+ARQUIVO_LOG = os.path.join(DIRETORIO_LOG, "emails_enviados.json")
+CAMINHO_LOGO = r"G:\\Identidade Visual\\- Atual -\\marca d´agua logo.png"
+
 SMTP_CONFIG = {
-    'server': 'mail.netocontabilidade.com.br',
-    'port': 587,
-    'usuario': SMTP_USER,
-    'senha': SMTP_PASSWORD,
-    'bcc': [
-        'Aldeneide@netocontabilidade.com.br',
-        'Pessoal2@netocontabilidade.com.br',
-        'Pessoal@netocontabilidade.com.br',
-        'Joyce@netocontabilidade.com.br'
-    ],
-    'bcc_teste': [
-        'mariaclarasc.netocontabilidade@gmail.com'
-    ]
+        'usuario': carregar_credenciais_smtp()[0],
+        'senha': carregar_credenciais_smtp()[1],
+        'server': 'smtp.office365.com',
+        'port': 587,
+        'bcc': [
+            'Pessoal2@netocontabilidade.com.br',
+            'Pessoal@netocontabilidade.com.br',
+            'Joyce@netocontabilidade.com.br'
+        ],
+        'bcc_teste': [
+            'mariaclarasc.netocontabilidade@gmail.com'
+        ]
 }
 
 def configurar_logging():
@@ -73,13 +77,22 @@ def configurar_logging():
     logging.basicConfig(level=logging.INFO, handlers=[stream_handler, file_handler], force=True)
 
 def carregar_imagem_base64(caminho):
+    """Carrega uma imagem e retorna um objeto MIMEImage."""
     try:
-        if not os.path.exists(caminho): return None
+        if not os.path.exists(caminho):
+            return None
         with open(caminho, 'rb') as f:
-            img = base64.b64encode(f.read()).decode('utf-8')
-        ext = os.path.splitext(caminho)[1].lower()
-        mime = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif'}.get(ext[1:], 'image/png')
-        return f"data:{mime};base64,{img}"
+            dados = f.read()
+
+        ext = os.path.splitext(caminho)[1].lower()[1:]
+        subtype = {
+            'png': 'png',
+            'jpg': 'jpeg',
+            'jpeg': 'jpeg',
+            'gif': 'gif'
+        }.get(ext, 'png')
+
+        return MIMEImage(dados, _subtype=subtype)
     except Exception as e:
         logging.warning(f"Erro ao carregar imagem: {e}")
         return None
@@ -121,8 +134,7 @@ def calcular_dias_restantes(data):
 
 def gerar_conteudo_email(func, cargo, data_exame, empresa, tipo):
     dias = data_exame.strftime('%d/%m/%Y')
-    logo = carregar_imagem_base64(CAMINHO_LOGO)
-    img_tag = f'<img src="{logo}" alt="Logo" width="250px">' if logo else ''
+    img_tag = '<img src="cid:logo" width="250px">'
 
     estilo = """<style>
         body, p, ul, li { color: #000; font-family: Arial; font-size: 14px; }
@@ -160,6 +172,12 @@ def enviar_email(destinatario, assunto, corpo):
         msg['Subject'] = assunto
         msg.attach(MIMEText(corpo, 'html', 'utf-8'))
 
+        logo_img = carregar_imagem_base64(CAMINHO_LOGO)
+        if logo_img:
+            logo_img.add_header('Content-ID', '<logo>')
+            logo_img.add_header('Content-Disposition', 'inline', filename=os.path.basename(CAMINHO_LOGO))
+            msg.attach(logo_img)
+
         with smtplib.SMTP(SMTP_CONFIG['server'], SMTP_CONFIG['port']) as server:
             server.starttls()
             server.login(SMTP_CONFIG['usuario'], SMTP_CONFIG['senha'])
@@ -181,7 +199,6 @@ def processar_planilha(path, empresa, email, log):
             dias = calcular_dias_restantes(data)
             if dias is None: continue
             
-            # Corrigida a lógica de classificação
             if 20 <= dias <= 30:
                 tipo = 'lembrete'
             elif 10 <= dias < 20:
@@ -189,9 +206,8 @@ def processar_planilha(path, empresa, email, log):
             elif -15 <= dias < 0:
                 tipo = 'vencido'
             else:
-                continue  # Fora dos ranges de interesse
+                continue
             
-            # Alterada a lógica do log para bloquear por tipo, não por data
             chave = f"{empresa}_{nome}_{tipo}"
             if chave in log:
                 logging.info(f"⚠️ E-mail do tipo '{tipo}' já enviado para: {nome}")
