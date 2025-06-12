@@ -11,6 +11,9 @@ from fuzzywuzzy import fuzz
 from unidecode import unidecode
 import logging
 import sys
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # === CONFIGURAÇÕES ===
 MODO_TESTE = True
@@ -20,11 +23,29 @@ DIRETORIO_LOG = r"G:\\PMA\\SCRIPTS\\Departamento_Pessoal\\Exames_Periódicos"
 ARQUIVO_LOG = os.path.join(DIRETORIO_LOG, "emails_enviados.json")
 CAMINHO_LOGO = r"G:\\Identidade Visual\\- Atual -\\marca d´agua logo.png"
 
+def carregar_credenciais_smtp():
+    """Carrega usuario e senha do SMTP de variáveis de ambiente ou arquivo local."""
+    usuario = os.getenv('SMTP_USER')
+    senha = os.getenv('SMTP_PASSWORD')
+    if not usuario or not senha:
+        try:
+            import local_settings  # type: ignore
+            usuario = usuario or getattr(local_settings, 'SMTP_USER', None)
+            senha = senha or getattr(local_settings, 'SMTP_PASSWORD', None)
+        except Exception:
+            pass
+    return usuario, senha
+
+SMTP_USER, SMTP_PASSWORD = carregar_credenciais_smtp()
+if not SMTP_USER or not SMTP_PASSWORD:
+    logging.error("❌ Credenciais SMTP não definidas. Verifique o .env ou local_settings.py.")
+    exit(1)
+
 SMTP_CONFIG = {
     'server': 'mail.netocontabilidade.com.br',
     'port': 587,
-    'usuario': 'Aldeneide@netocontabilidade.com.br',
-    'senha': 'Neto*7626',
+    'usuario': SMTP_USER,
+    'senha': SMTP_PASSWORD,
     'bcc': [
         'Aldeneide@netocontabilidade.com.br',
         'Pessoal2@netocontabilidade.com.br',
@@ -218,6 +239,6 @@ def main():
 
     salvar_log_emails(log)
     logging.info(f"✅ Finalizado: {processadas} empresas processadas")
-
+    
 if __name__ == "__main__":
     main()
