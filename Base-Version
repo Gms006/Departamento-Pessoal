@@ -1,0 +1,223 @@
+import pandas as pd
+import os
+import re
+import json
+import smtplib
+import base64
+from datetime import datetime
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from fuzzywuzzy import fuzz
+from unidecode import unidecode
+import logging
+import sys
+
+# === CONFIGURAÇÕES ===
+MODO_TESTE = True
+DIRETORIO_BASE = r"G:\\DEPARTAMENTO PESSOAL\\EMPRESAS"
+PLANILHA_EMAILS = r"G:\\PMA\\LISTA EMPRESAS - NETO CONTABILIDADE 2025 - Copia.xlsm"
+DIRETORIO_LOG = r"G:\\PMA\\SCRIPTS\\Departamento_Pessoal\\Exames_Periódicos"
+ARQUIVO_LOG = os.path.join(DIRETORIO_LOG, "emails_enviados.json")
+CAMINHO_LOGO = r"G:\\Identidade Visual\\- Atual -\\marca d´agua logo.png"
+
+SMTP_CONFIG = {
+    'server': 'mail.netocontabilidade.com.br',
+    'port': 587,
+    'usuario': 'Aldeneide@netocontabilidade.com.br',
+    'senha': 'Neto*7626',
+    'bcc': [
+        'Aldeneide@netocontabilidade.com.br',
+        'Pessoal2@netocontabilidade.com.br',
+        'Pessoal@netocontabilidade.com.br',
+        'Joyce@netocontabilidade.com.br'
+    ],
+    'bcc_teste': [
+        'mariaclarasc.netocontabilidade@gmail.com'
+    ]
+}
+
+def configurar_logging():
+    os.makedirs(DIRETORIO_LOG, exist_ok=True)
+    log_format = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(log_format)
+
+    file_handler = logging.FileHandler(
+        os.path.join(DIRETORIO_LOG, 'exames_periodicos.log'), encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(log_format)
+
+    logging.basicConfig(level=logging.INFO, handlers=[stream_handler, file_handler], force=True)
+
+def carregar_imagem_base64(caminho):
+    try:
+        if not os.path.exists(caminho): return None
+        with open(caminho, 'rb') as f:
+            img = base64.b64encode(f.read()).decode('utf-8')
+        ext = os.path.splitext(caminho)[1].lower()
+        mime = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif'}.get(ext[1:], 'image/png')
+        return f"data:{mime};base64,{img}"
+    except Exception as e:
+        logging.warning(f"Erro ao carregar imagem: {e}")
+        return None
+
+def carregar_log_emails():
+    if not os.path.exists(ARQUIVO_LOG): return {}
+    try:
+        with open(ARQUIVO_LOG, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {}
+
+def salvar_log_emails(log_data):
+    with open(ARQUIVO_LOG, 'w', encoding='utf-8') as f:
+        json.dump(log_data, f, ensure_ascii=False, indent=2, default=str)
+
+def normalizar_nome(nome):
+    return unidecode(str(nome)).lower().strip() if pd.notna(nome) else ""
+
+def carregar_emails_empresas():
+    try:
+        df = pd.read_excel(PLANILHA_EMAILS, sheet_name='MARIA CLARA')
+        return {normalizar_nome(r['EMPRESA']): r['E-MAIL'].strip() for _, r in df.iterrows() if pd.notna(r['EMPRESA']) and pd.notna(r['E-MAIL'])}
+    except Exception as e:
+        logging.error(f"Erro ao carregar planilha de e-mails: {e}")
+        return {}
+
+def encontrar_email_empresa(nome, emails_dict):
+    norm = normalizar_nome(nome)
+    return emails_dict.get(norm) or max(emails_dict.items(), key=lambda x: fuzz.ratio(norm, x[0]), default=(None, None))[1]
+
+def calcular_dias_restantes(data):
+    try:
+        data = pd.to_datetime(data, dayfirst=True, errors='coerce')
+        return (data.date() - datetime.now().date()).days if pd.notna(data) else None
+    except Exception as e:
+        logging.error(f"Erro ao calcular dias restantes: {e}")
+        return None
+
+def gerar_conteudo_email(func, cargo, data_exame, empresa, tipo):
+    dias = data_exame.strftime('%d/%m/%Y')
+    logo = carregar_imagem_base64(CAMINHO_LOGO)
+    img_tag = f'<img src="{logo}" alt="Logo" width="250px">' if logo else ''
+
+    estilo = """<style>
+        body, p, ul, li { color: #000; font-family: Arial; font-size: 14px; }
+        .urgente { color: #d32f2f; font-weight: bold; }
+        .alerta { color: #f57c00; font-weight: bold; }
+        .atencao { color: #1976d2; font-weight: bold; }
+    </style>"""
+
+    assinatura = f"<p>Atenciosamente,<br>Joyce Guimarães Carvalho<br>Aldeneide Correa de Paiva<br>Amanda<br><b>Departamento Pessoal - Neto Contabilidade</b></p><div>{img_tag}</div>"
+
+    if tipo == 'vencido':
+        assunto = f"🚨 URGENTE - {empresa} - Exame VENCIDO - {func}"
+        corpo = f"""{estilo}<body><p class='urgente'>⚠️ ATENÇÃO: Exame vencido:</p>
+        <ul><li><b>Funcionário:</b> {func}</li><li><b>Cargo:</b> {cargo}</li><li><b>Data:</b> {dias}</li><li><b>Status:</b> <span class='urgente'>VENCIDO</span></li></ul>
+        <p class='urgente'>Regularize imediatamente.</p>{assinatura}</body>"""
+    elif tipo == 'alerta':
+        assunto = f"⏰ ALERTA - {empresa} - Exame próximo - {func}"
+        corpo = f"""{estilo}<body><p class='alerta'>🔔 ALERTA: Menos de 20 dias:</p>
+        <ul><li><b>Funcionário:</b> {func}</li><li><b>Cargo:</b> {cargo}</li><li><b>Data:</b> {dias}</li></ul>
+        <p>Agende imediatamente.</p>{assinatura}</body>"""
+    else:  # tipo == 'lembrete'
+        assunto = f"📋 LEMBRETE - {empresa} - Agendar exame - {func}"
+        corpo = f"""{estilo}<body><p class='atencao'>📅 LEMBRETE: Agendar com antecedência:</p>
+        <ul><li><b>Funcionário:</b> {func}</li><li><b>Cargo:</b> {cargo}</li><li><b>Data:</b> {dias}</li></ul>
+        <p>Evite correria.</p>{assinatura}</body>"""
+    return assunto, corpo
+
+def enviar_email(destinatario, assunto, corpo):
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_CONFIG['usuario']
+        msg['To'] = 'certificados.netocontabilidade@gmail.com' if MODO_TESTE else destinatario
+        bcc_list = SMTP_CONFIG['bcc_teste'] if MODO_TESTE else SMTP_CONFIG['bcc']
+        msg['Bcc'] = ', '.join(bcc_list)
+        msg['Subject'] = assunto
+        msg.attach(MIMEText(corpo, 'html', 'utf-8'))
+
+        with smtplib.SMTP(SMTP_CONFIG['server'], SMTP_CONFIG['port']) as server:
+            server.starttls()
+            server.login(SMTP_CONFIG['usuario'], SMTP_CONFIG['senha'])
+            server.send_message(msg, to_addrs=[msg['To']] + bcc_list)
+
+        logging.info(f"📤 E-mail enviado: {msg['To']} - {assunto}")
+        return True
+    except Exception as e:
+        logging.error(f"Erro ao enviar e-mail: {e}")
+        return False
+
+def processar_planilha(path, empresa, email, log):
+    try:
+        df = pd.read_excel(path, skiprows=9)
+        df = df[pd.notna(df.iloc[:, 2]) & pd.notna(df.iloc[:, 7]) & pd.to_datetime(df.iloc[:, 10], errors='coerce').notna()]
+
+        for _, row in df.iterrows():
+            nome, cargo, data = str(row.iloc[2]).strip(), str(row.iloc[7]).strip(), row.iloc[10]
+            dias = calcular_dias_restantes(data)
+            if dias is None: continue
+            
+            # Corrigida a lógica de classificação
+            if 20 <= dias <= 30:
+                tipo = 'lembrete'
+            elif 10 <= dias < 20:
+                tipo = 'alerta'
+            elif -15 <= dias < 0:
+                tipo = 'vencido'
+            else:
+                continue  # Fora dos ranges de interesse
+            
+            # Alterada a lógica do log para bloquear por tipo, não por data
+            chave = f"{empresa}_{nome}_{tipo}"
+            if chave in log:
+                logging.info(f"⚠️ E-mail do tipo '{tipo}' já enviado para: {nome}")
+                continue
+                
+            assunto, corpo = gerar_conteudo_email(nome, cargo, data, empresa, tipo)
+            if enviar_email(email, assunto, corpo):
+                log[chave] = {
+                    'empresa': empresa, 'funcionario': nome, 'cargo': cargo,
+                    'data_exame': str(data), 'dias_restantes': dias, 'tipo': tipo,
+                    'data_envio': str(datetime.now().date()), 'email': email
+                }
+    except Exception as e:
+        logging.error(f"Erro ao processar {path}: {e}")
+
+def main():
+    configurar_logging()
+    logging.info("🚀 Início do script")
+
+    log = carregar_log_emails()
+    emails = carregar_emails_empresas()
+    if not emails:
+        logging.error("❌ Nenhum e-mail carregado.")
+        return
+
+    processadas = 0
+    for nome in os.listdir(DIRETORIO_BASE):
+        path_emp = os.path.join(DIRETORIO_BASE, nome)
+        if not os.path.isdir(path_emp): continue
+        path_sst = os.path.join(path_emp, "SST", "EXAMES PERIODICOS", "2025")
+        if not os.path.exists(path_sst): continue
+        arquivos = [f for f in os.listdir(path_sst) if f.endswith(('.xls', '.xlsx'))]
+        if not arquivos: continue
+        planilha = os.path.join(path_sst, arquivos[0])
+        email = encontrar_email_empresa(nome, emails)
+        if not email:
+            logging.warning(f"❗ E-mail não encontrado: {nome}")
+            continue
+        logging.info(f"🏢 Processando: {nome}")
+        processar_planilha(planilha, nome, email, log)
+        processadas += 1
+        if MODO_TESTE and processadas >= 3:
+            logging.info("🧪 Modo teste: limite de 3 empresas atingido")
+            break
+
+    salvar_log_emails(log)
+    logging.info(f"✅ Finalizado: {processadas} empresas processadas")
+
+if __name__ == "__main__":
+    main()
