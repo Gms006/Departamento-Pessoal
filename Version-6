@@ -98,11 +98,23 @@ def carregar_dados():
     return email_final, log
 
 def extrair_cnpj_planilha(path):
-    """Extrai CNPJ da planilha de exames"""
     try:
-        valor = pd.read_excel(path, nrows=6, usecols="B").iloc[4, 0]
-        match = re.search(r'(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', str(valor))
-        return re.sub(r'\D', '', match.group(1)) if match else None
+        ext = os.path.splitext(path)[1].lower()
+        engine = "xlrd" if ext == ".xls" else "openpyxl"
+        df = pd.read_excel(path, usecols="B", nrows=10, engine=engine)
+
+        for i, valor in enumerate(df.iloc[:, 0]):
+            if pd.isna(valor):
+                continue
+            match = re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', str(valor))
+            if match:
+                cnpj_limpo = re.sub(r'\D', '', match.group(0))
+                logging.debug(f"CNPJ encontrado na linha {i+1}: {cnpj_limpo}")
+                return cnpj_limpo
+
+        logging.warning(f"❗ Nenhum CNPJ encontrado nas 10 primeiras linhas de {path}")
+        return None
+
     except Exception as e:
         logging.warning(f"Erro ao extrair CNPJ de {path}: {e}")
         return None
