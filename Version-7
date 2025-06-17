@@ -6,10 +6,8 @@ from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
-from unidecode import unidecode
 import logging
 import sys
-import glob
 import re
 from dotenv import load_dotenv
 
@@ -19,10 +17,8 @@ load_dotenv()
 MODO_TESTE = True
 CAMINHOS = {
     'base': r"G:\\DEPARTAMENTO PESSOAL\\EMPRESAS",
-    'emails': r"G:\\PMA\\LISTA EMPRESAS - NETO CONTABILIDADE 2025 - Copia.xlsm",
     'log_dir': r"G:\\PMA\\SCRIPTS\\Departamento_Pessoal\\Exames_Periódicos",
-    'logo': r"G:\\Identidade Visual\\- Atual -\\marca d´água logo.png",
-    'acessorias': r"G:\PMA\SCRIPTS\Departamento_Pessoal\Exames_Periódicos"
+    'logo': r"G:\\Identidade Visual\\- Atual -\\marca d´água logo.png"
 }
 
 SMTP_CONFIG = {
@@ -32,19 +28,19 @@ SMTP_CONFIG = {
 }
 
 def configurar_ambiente():
-    """Configura logging e carrega credenciais SMTP"""
     os.makedirs(CAMINHOS['log_dir'], exist_ok=True)
     log_format = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    
-    for handler in [logging.StreamHandler(sys.stdout), 
-                   logging.FileHandler(os.path.join(CAMINHOS['log_dir'], 'exames_periodicos.log'), encoding='utf-8')]:
+
+    for handler in [logging.StreamHandler(sys.stdout),
+                    logging.FileHandler(os.path.join(CAMINHOS['log_dir'], 'exames_periodicos.log'), encoding='utf-8')]:
         handler.setLevel(logging.INFO)
         handler.setFormatter(log_format)
-    
-    logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout), 
-                       logging.FileHandler(os.path.join(CAMINHOS['log_dir'], 'exames_periodicos.log'), encoding='utf-8')], force=True)
-    
-    # Credenciais SMTP
+
+    logging.basicConfig(level=logging.INFO, handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(os.path.join(CAMINHOS['log_dir'], 'exames_periodicos.log'), encoding='utf-8')
+    ], force=True)
+
     usuario = os.getenv('SMTP_USER')
     senha = os.getenv('SMTP_PASSWORD')
     if not usuario or not senha:
@@ -52,50 +48,40 @@ def configurar_ambiente():
             import local_settings
             usuario = usuario or getattr(local_settings, 'SMTP_USER', None)
             senha = senha or getattr(local_settings, 'SMTP_PASSWORD', None)
-        except: pass
-    
+        except:
+            pass
+
     if not usuario or not senha:
         logging.error("❌ Credenciais SMTP não encontradas!")
         exit(1)
-    
+
     return usuario, senha
 
 def carregar_dados():
-    """Carrega e-mails das empresas e log de envios"""
-    # E-mails do Acessórias
-    arquivos = glob.glob(os.path.join(CAMINHOS['acessorias'], "S3D_empresas_contatos*.xlsx"))
-    if not arquivos:
-        logging.error("❌ Arquivo de contatos não encontrado.")
-        return {}, {}
-    
-    df = pd.read_excel(max(arquivos, key=os.path.getctime), header=2)
-    logging.info(f"📄 Planilha carregada: {len(df)} registros")
-    
-    emails = {}
-    for _, row in df.iterrows():
-        cnpj = re.sub(r'\D', '', str(row.get("CNPJ", "")))
-        email = str(row.get("Email do Contato", "")).strip()
-        dpto = str(row.get("Departamentos do Contato", "")).lower()
-        
-        if cnpj and email:
-            if cnpj not in emails:
-                emails[cnpj] = []
-            emails[cnpj].append((email, dpto))
-    
-    # Prioriza e-mails do departamento pessoal
-    email_final = {}
-    for cnpj, lista in emails.items():
-        email_final[cnpj] = next((e for e, d in lista if 'pessoal' in d), lista[0][0])
-    
-    # Log de envios
-    arquivo_log = os.path.join(CAMINHOS['log_dir'], "emails_enviados.json")
+    """Carrega os e-mails das empresas a partir do JSON e o log de envios"""
+    json_path = r"G:\PMA\SCRIPTS\Departamento_Pessoal\Exames_Periódicos\emails_com_razao_social.json"
+
     try:
-        with open(arquivo_log, 'r', encoding='utf-8') as f:
+        with open(json_path, encoding='utf-8') as f:
+            dados = json.load(f)
+    except Exception as e:
+        logging.error(f"❌ Erro ao carregar JSON de e-mails: {e}")
+        return {}, {}
+
+    emails = {}
+    for cnpj, info in dados.items():
+        email = info.get("email", "").strip()
+        if email and email.lower() != "nan":
+            emails[cnpj] = email
+
+    log_path = os.path.join(CAMINHOS['log_dir'], "emails_enviados.json")
+    try:
+        with open(log_path, 'r', encoding='utf-8') as f:
             log = json.load(f)
     except:
         log = {}
-    
-    return email_final, log
+
+    return emails, log
 
 def extrair_cnpj_planilha(path):
     try:
@@ -120,7 +106,6 @@ def extrair_cnpj_planilha(path):
         return None
 
 def calcular_dias_restantes(data):
-    """Calcula dias restantes até a data do exame"""
     try:
         data = pd.to_datetime(data, dayfirst=True, errors='coerce')
         return (data.date() - datetime.now().date()).days if pd.notna(data) else None
@@ -133,61 +118,30 @@ def gerar_conteudo_email(func, cargo, data_exame, empresa, tipo):
     img_tag = '<img src="cid:logo" width="250px">'
 
     assinatura = f"<p>Atenciosamente,<br>Joyce Guimarães Carvalho<br>Aldeneide Correa de Paiva<br><b>Departamento Pessoal - Neto Contabilidade</b></p><div>{img_tag}</div>"
-
-    estilo = """
-    <style>
-        body, p, ul, li, b { color: #000; font-family: Arial, sans-serif; font-size: 14px; }
-    </style>
-    """
+    estilo = """<style>body, p, ul, li, b { color: #000; font-family: Arial, sans-serif; font-size: 14px; }</style>"""
 
     if tipo == 'vencido':
         assunto = f"🚨 URGENTE - {empresa} - Exame VENCIDO - {func}"
-        corpo = f"""{estilo}
-        <body>
-        <p>⚠️ <b>ATENÇÃO:</b> O exame periódico do colaborador abaixo encontra-se <b>VENCIDO</b> e necessita regularização <b>IMEDIATA</b>:</p>
-        <ul>
-            <li><b>Funcionário:</b> {func}</li>
-            <li><b>Cargo:</b> {cargo}</li>
-            <li><b>Data de vencimento:</b> {data_formatada}</li>
-            <li><b>Status:</b> <b>VENCIDO</b></li>
-        </ul>
+        corpo = f"""{estilo}<body><p>⚠️ <b>ATENÇÃO:</b> O exame periódico do colaborador abaixo encontra-se <b>VENCIDO</b> e necessita regularização <b>IMEDIATA</b>:</p>
+        <ul><li><b>Funcionário:</b> {func}</li><li><b>Cargo:</b> {cargo}</li><li><b>Data de vencimento:</b> {data_formatada}</li><li><b>Status:</b> <b>VENCIDO</b></li></ul>
         <p>É fundamental que o exame seja realizado o mais breve possível, <b>de acordo com o PCMSO da empresa</b>, para manter a conformidade legal da mesma.</p>
-        <p><b>Favor agendar e realizar o exame urgentemente</b>, informando-nos sobre o agendamento. Caso o colaborador <b>já tenha feito o exame</b>, solicitamos que a ASO nos seja enviada para registro no sistema.</p>
-        {assinatura}
-        </body>"""
-        
+        <p><b>Favor agendar e realizar o exame urgentemente</b>, informando-nos sobre o agendamento. Caso o colaborador <b>já tenha feito o exame</b>, solicitamos que a ASO nos seja enviada para registro no sistema.</p>{assinatura}</body>"""
+
     elif tipo == 'alerta':
         assunto = f"⏰ ALERTA - {empresa} - Exame vence em {dias_restantes} dias - {func}"
-        corpo = f"""{estilo}
-        <body>
-        <p>🔔 <b>ALERTA:</b> Reforçamos que o exame periódico do colaborador abaixo <b>vence em {dias_restantes} dias</b>:</p>
-        <ul>
-            <li><b>Funcionário:</b> {func}</li>
-            <li><b>Cargo:</b> {cargo}</li>
-            <li><b>Realizar exame até:</b> {data_formatada} <b>de acordo com o PCMSO da empresa</b></li>
-        </ul>
-        <p>Recomendamos a realização do exame o quanto antes para que a empresa se mantenha em conformidade com a lei e solicitamos que, após a realização, nos seja encaminhado o exame digitalizado para registro no sistema.</p>
-        {assinatura}
-        </body>"""
+        corpo = f"""{estilo}<body><p>🔔 <b>ALERTA:</b> Reforçamos que o exame periódico do colaborador abaixo <b>vence em {dias_restantes} dias</b>:</p>
+        <ul><li><b>Funcionário:</b> {func}</li><li><b>Cargo:</b> {cargo}</li><li><b>Realizar exame até:</b> {data_formatada}</li></ul>
+        <p>Recomendamos a realização do exame o quanto antes e solicitamos que, após a realização, nos seja encaminhado o exame digitalizado para registro no sistema.</p>{assinatura}</body>"""
 
-    else:  # tipo == 'lembrete'
+    else:
         assunto = f"📋 LEMBRETE - {empresa} - Exame próximo - {func}"
-        corpo = f"""{estilo}
-        <body>
-        <p>📅 <b>LEMBRETE:</b> Informamos que o exame periódico do colaborador está <b>próximo do vencimento</b>:</p>
-        <ul>
-            <li><b>Funcionário:</b> {func}</li>
-            <li><b>Cargo:</b> {cargo}</li>
-            <li><b>Realizar exame até:</b> {data_formatada} <b>de acordo com o PCMSO da empresa</b></li>
-        </ul>
-        <p>Recomendamos que o agendamento do exame seja feito com antecedência e solicitamos que, após a realização, nos seja encaminhado o exame digitalizado para registro no sistema.</p>
-        {assinatura}
-        </body>"""
+        corpo = f"""{estilo}<body><p>📅 <b>LEMBRETE:</b> Informamos que o exame periódico do colaborador está <b>próximo do vencimento</b>:</p>
+        <ul><li><b>Funcionário:</b> {func}</li><li><b>Cargo:</b> {cargo}</li><li><b>Realizar exame até:</b> {data_formatada}</li></ul>
+        <p>Recomendamos que o agendamento do exame seja feito com antecedência e nos seja enviado para registro no sistema.</p>{assinatura}</body>"""
 
     return assunto, corpo
 
 def enviar_email(usuario, senha, destinatario, assunto, corpo):
-    """Envia e-mail com anexo de logo"""
     try:
         msg = MIMEMultipart()
         msg['From'] = usuario
@@ -196,20 +150,19 @@ def enviar_email(usuario, senha, destinatario, assunto, corpo):
         msg['Bcc'] = ', '.join(bcc_list)
         msg['Subject'] = assunto
         msg.attach(MIMEText(corpo, 'html', 'utf-8'))
-        
-        # Anexar logo
+
         if os.path.exists(CAMINHOS['logo']):
             with open(CAMINHOS['logo'], 'rb') as f:
                 logo = MIMEImage(f.read(), _subtype='png')
                 logo.add_header('Content-ID', '<logo>')
                 logo.add_header('Content-Disposition', 'inline')
                 msg.attach(logo)
-        
+
         with smtplib.SMTP(SMTP_CONFIG['server'], SMTP_CONFIG['port']) as server:
             server.starttls()
             server.login(usuario, senha)
             server.send_message(msg, to_addrs=[msg['To']] + bcc_list)
-        
+
         logging.info(f"📤 E-mail enviado: {destinatario} - {assunto}")
         return True
     except Exception as e:
@@ -217,17 +170,16 @@ def enviar_email(usuario, senha, destinatario, assunto, corpo):
         return False
 
 def processar_empresa(path_planilha, empresa, email, log, usuario, senha):
-    """Processa planilha de uma empresa e envia e-mails necessários"""
     try:
         df = pd.read_excel(path_planilha, skiprows=8)
         df = df[pd.notna(df.iloc[:, 2]) & pd.notna(df.iloc[:, 7]) & pd.to_datetime(df.iloc[:, 10], errors='coerce').notna()]
-        
+
         for _, row in df.iterrows():
             nome, cargo, data = str(row.iloc[2]).strip(), str(row.iloc[7]).strip(), row.iloc[10]
             dias = calcular_dias_restantes(data)
-            if dias is None: continue
-            
-            # Determina tipo de e-mail
+            if dias is None:
+                continue
+
             if 20 <= dias <= 30:
                 tipo = 'lembrete'
             elif 10 <= dias < 20:
@@ -236,16 +188,16 @@ def processar_empresa(path_planilha, empresa, email, log, usuario, senha):
                 tipo = 'vencido'
             else:
                 continue
-            
+
             chave = f"{empresa}_{nome}_{tipo}"
             if chave in log:
                 logging.info(f"⚠️ E-mail '{tipo}' já enviado para: {nome}")
                 continue
-            
+
             if MODO_TESTE:
                 print(f"📋 {tipo.upper()} | {empresa} | {nome} | {cargo} | {data.strftime('%d/%m/%Y')} | {email}")
             else:
-                assunto, corpo = gerar_email_content(nome, cargo, data, empresa, tipo)
+                assunto, corpo = gerar_conteudo_email(nome, cargo, data, empresa, tipo)
                 if enviar_email(usuario, senha, email, assunto, corpo):
                     log[chave] = {
                         'empresa': empresa, 'funcionario': nome, 'cargo': cargo,
@@ -256,49 +208,50 @@ def processar_empresa(path_planilha, empresa, email, log, usuario, senha):
         logging.error(f"Erro ao processar {path_planilha}: {e}")
 
 def main():
-    """Função principal"""
     logging.info("🚀 Início do script")
     usuario, senha = configurar_ambiente()
     emails, log = carregar_dados()
-    
+
     if not emails:
         logging.error("❌ Nenhum e-mail carregado.")
         return
-    
+
     processadas = 0
     for nome_empresa in os.listdir(CAMINHOS['base']):
         path_empresa = os.path.join(CAMINHOS['base'], nome_empresa)
-        if not os.path.isdir(path_empresa): continue
-        
+        if not os.path.isdir(path_empresa):
+            continue
+
         path_sst = os.path.join(path_empresa, "SST", "EXAMES PERIODICOS", "2025")
-        if not os.path.exists(path_sst): continue
-        
-        arquivos = [f for f in os.listdir(path_sst) if f.endswith(('.xls', '.xlsx'))]
-        if not arquivos: continue
-        
+        if not os.path.exists(path_sst):
+            continue
+
+        arquivos = [f for f in os.listdir(path_sst) if f.lower().endswith(('.xls', '.xlsx', '.xlsm'))]
+        if not arquivos:
+            continue
+
         planilha = os.path.join(path_sst, arquivos[0])
         cnpj = extrair_cnpj_planilha(planilha)
         if not cnpj:
             logging.warning(f"❗ CNPJ não encontrado: {nome_empresa}")
             continue
-        
+
         email = emails.get(cnpj)
         if not email:
             logging.warning(f"❗ E-mail não encontrado para CNPJ: {cnpj} ({nome_empresa})")
             continue
-        
+
         logging.info(f"🏢 Processando: {nome_empresa} ({cnpj})")
         processar_empresa(planilha, nome_empresa, email, log, usuario, senha)
         processadas += 1
-        
+
         if MODO_TESTE and processadas >= 5:
             logging.info("🧪 Modo teste: limite atingido")
             break
-    
-    # Salvar log
+
     with open(os.path.join(CAMINHOS['log_dir'], "emails_enviados.json"), 'w', encoding='utf-8') as f:
         json.dump(log, f, ensure_ascii=False, indent=2, default=str)
-    
+
     logging.info(f"✅ Finalizado: {processadas} empresas processadas")
 
 if __name__ == "__main__":
